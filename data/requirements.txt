@@ -1,0 +1,8 @@
+pandas
+pyarrow
+pyyaml
+pyspark
+delta-spark
+kafka-python
+pytest
+streamlit
