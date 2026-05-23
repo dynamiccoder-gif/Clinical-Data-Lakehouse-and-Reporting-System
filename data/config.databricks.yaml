@@ -1,0 +1,128 @@
+project:
+  name: "Hospital-Data-Platform"
+  version: "3.0.0"
+
+spark:
+  app_name: "HealthcareStreamingEngine"
+  driver_memory: "8g"
+  shuffle_partitions: "16"
+  master: "local[*]"
+  local_dir: "/local_disk0/tmp/healthcare_lakehouse"
+  kafka_package: "org.apache.spark:spark-sql-kafka-0-10_2.13:4.1.1"
+  databricks_runtime: true
+  trigger_mode: "availableNow"
+
+paths:
+  raw_encounters: "/Volumes/workspace/default/healthcare_lakehouse/raw_ingestion"
+  source_encounters: "/Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv"
+  bronze: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/bronze/encounters"
+  raw_patients: "/Volumes/workspace/default/clinical_s3_landing/patients/patients_combined.csv"
+  raw_conditions: "/Volumes/workspace/default/clinical_s3_landing/conditions/conditions_combined.csv"
+  raw_medications: "/Volumes/workspace/default/clinical_s3_landing/medications/medications_combined.csv"
+  raw_procedures: "/Volumes/workspace/default/clinical_s3_landing/procedures/procedures_combined.csv"
+  raw_observations: "/Volumes/workspace/default/clinical_s3_landing/observations/observations_combined.csv"
+  raw_careplans: "/Volumes/workspace/default/clinical_s3_landing/careplans/careplans_combined.csv"
+  raw_allergies: "/Volumes/workspace/default/clinical_s3_landing/allergies/allergies_combined.csv"
+  raw_immunizations: "/Volumes/workspace/default/clinical_s3_landing/immunizations/immunizations_combined.csv"
+  bronze_checkpoint: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/checkpoints/bronze"
+  silver: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/silver/clinical360"
+  quarantine: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/quarantine/encounters"
+  patient_quarantine: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/quarantine/patients"
+  gold: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/clinical_metrics"
+  gold_patient_360: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/patient_360"
+  gold_care_gaps: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/care_gaps"
+  gold_comorbidity_pairs: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/comorbidity_pairs"
+  gold_return_gaps: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/return_gaps"
+  gold_completeness_scorecard: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/completeness_scorecard"
+  gold_disease_rankings: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/gold/disease_rankings"
+  audit_logs: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/audit/metadata"
+  processed_files: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/audit/processed_files"
+  patient_last_encounter_state: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/state/patient_last_encounter_state"
+  features:
+    patients: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/patients"
+    observations_by_encounter: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/observations_by_encounter"
+    conditions_by_encounter: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/conditions_by_encounter"
+    conditions_by_patient: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/conditions_by_patient"
+    medications_by_encounter: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/medications_by_encounter"
+    procedures_by_encounter: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/procedures_by_encounter"
+    careplans_by_encounter: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/careplans_by_encounter"
+    allergies_by_patient: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/allergies_by_patient"
+    immunizations_by_patient: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/features/immunizations_by_patient"
+
+quality_gates: {}
+
+tables:
+  processed_files: "workspace.default.processed_files"
+  patient_last_encounter_state: "workspace.default.patient_last_encounter_state"
+
+streaming:
+  source: "file"
+
+kafka:
+  bootstrap_servers: "<your-confluent-or-msk-bootstrap-server>"
+  encounters_topic: "synthea.encounters"
+  starting_offsets: "earliest"
+  checkpoint: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/checkpoints/kafka_encounters"
+  bronze_checkpoint: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/checkpoints/kafka_bronze_domains"
+  cursor_path: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/checkpoints/kafka_publish_cursor.json"
+  dlq_topic: "synthea.dlq"
+  bronze_root: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/bronze/kafka"
+  silver_root: "/Volumes/workspace/default/healthcare_lakehouse/lakehouse/silver/kafka"
+  domains:
+    encounters:
+      topic: "synthea.encounters"
+      source: "/Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv"
+      partitions: 4
+      required_fields: ["ID", "PATIENT", "DATE"]
+      natural_key_fields: ["ID"]
+    patients:
+      topic: "synthea.patients"
+      source: "/Volumes/workspace/default/clinical_s3_landing/patients/patients_combined.csv"
+      partitions: 2
+      required_fields: ["ID", "BIRTHDATE"]
+      natural_key_fields: ["ID"]
+    conditions:
+      topic: "synthea.conditions"
+      source: "/Volumes/workspace/default/clinical_s3_landing/conditions/conditions_combined.csv"
+      partitions: 3
+      required_fields: ["PATIENT", "ENCOUNTER", "DESCRIPTION", "START"]
+      natural_key_fields: ["PATIENT", "ENCOUNTER", "CODE", "START"]
+    medications:
+      topic: "synthea.medications"
+      source: "/Volumes/workspace/default/clinical_s3_landing/medications/medications_combined.csv"
+      partitions: 3
+      required_fields: ["PATIENT", "DESCRIPTION", "START"]
+      natural_key_fields: ["PATIENT", "ENCOUNTER", "CODE", "START"]
+    observations:
+      topic: "synthea.observations"
+      source: "/Volumes/workspace/default/clinical_s3_landing/observations/observations_combined.csv"
+      partitions: 4
+      required_fields: ["PATIENT", "ENCOUNTER", "DESCRIPTION", "DATE"]
+      natural_key_fields: ["PATIENT", "ENCOUNTER", "CODE", "DATE"]
+    procedures:
+      topic: "synthea.procedures"
+      source: "/Volumes/workspace/default/clinical_s3_landing/procedures/procedures_combined.csv"
+      partitions: 2
+      required_fields: ["PATIENT", "ENCOUNTER", "DESCRIPTION", "DATE"]
+      natural_key_fields: ["PATIENT", "ENCOUNTER", "CODE", "DATE"]
+    careplans:
+      topic: "synthea.careplans"
+      source: "/Volumes/workspace/default/clinical_s3_landing/careplans/careplans_combined.csv"
+      partitions: 2
+      required_fields: ["PATIENT", "ENCOUNTER", "DESCRIPTION", "START"]
+      natural_key_fields: ["ID"]
+    allergies:
+      topic: "synthea.allergies"
+      source: "/Volumes/workspace/default/clinical_s3_landing/allergies/allergies_combined.csv"
+      partitions: 1
+      required_fields: ["PATIENT", "DESCRIPTION", "START"]
+      natural_key_fields: ["PATIENT", "CODE", "START"]
+    immunizations:
+      topic: "synthea.immunizations"
+      source: "/Volumes/workspace/default/clinical_s3_landing/immunizations/immunizations_combined.csv"
+      partitions: 2
+      required_fields: ["PATIENT", "DESCRIPTION", "DATE"]
+      natural_key_fields: ["PATIENT", "CODE", "DATE"]
+
+serving:
+  snapshot_path: "/Volumes/workspace/default/healthcare_lakehouse/reports/gold_snapshot.json"
