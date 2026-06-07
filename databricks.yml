@@ -1,0 +1,457 @@
+bundle:
+  name: healthcare_lakehouse
+
+sync:
+  exclude:
+    - .env*
+    - .streamlit/secrets.toml
+    - secrets/**
+    - data/raw_ingestion/**
+    - data/source_dump/**
+    - data/databricks_sample/**
+    - data/lakehouse/**
+    - data/airflow/runtime/**
+    - data/airflow/runtime_broken_*/**
+    - dashboard/**
+    - databricks_app/**
+    - streamlit_cloud_app/**
+    - docs/**
+    - notebooks/**
+    - scripts/**
+    - tools/**
+    - README.md
+    - DEPLOYMENT.md
+    - DATABRICKS_DEPLOYMENT.md
+    - docker-compose.kafka.yml
+    - requirements.txt
+    - "**/__pycache__/**"
+    - "*.backup"
+  include:
+    - data/simulator.py
+    - data/pipeline.py
+    - data/src/**
+    - data/config.databricks.yaml
+    - data/scripts/**
+    - src/streaming/kafka_vitals_bronze.py
+    - src/streaming/kafka_vitals_silver.py
+    - src/streaming/kafka_vitals_gold.py
+    - src/streaming/kafka_vitals_quality_check.py
+    - src/streaming/publish_s3_encounters_to_kafka.py
+    - src/streaming/kafka_encounters_bronze.py
+    - src/streaming/kafka_encounters_silver.py
+    - src/streaming/kafka_encounters_gold.py
+
+resources:
+  jobs:
+    clinical_360_full_refresh:
+      name: clinical-360-full-refresh
+
+      tasks:
+        - task_key: land_encounter_chunk
+          spark_python_task:
+            python_file: data/simulator.py
+            parameters:
+              - --source
+              - /Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv
+              - --target
+              - /Volumes/workspace/default/healthcare_lakehouse/raw_ingestion
+              - --max-chunks
+              - "1"
+              - --chunk-size
+              - "5000"
+              - --interval-seconds
+              - "0"
+              - --source-name
+              - encounters
+              - --offset-table
+              - workspace.default.ingestion_offsets
+          environment_key: default
+
+        - task_key: prepare_features
+          depends_on:
+            - task_key: land_encounter_chunk
+          spark_python_task:
+            python_file: data/scripts/prepare_feature_tables.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+          environment_key: default
+
+        - task_key: run_file_pipeline
+          depends_on:
+            - task_key: prepare_features
+          spark_python_task:
+            python_file: data/pipeline.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+          environment_key: default
+
+        - task_key: build_gold
+          depends_on:
+            - task_key: run_file_pipeline
+          spark_python_task:
+            python_file: data/scripts/build_gold_analytics.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+          environment_key: default
+
+        - task_key: publish_snapshot
+          depends_on:
+            - task_key: build_gold
+          spark_python_task:
+            python_file: data/scripts/publish_gold_snapshot.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+          environment_key: default
+
+        - task_key: register_gold_tables
+          depends_on:
+            - task_key: publish_snapshot
+          spark_python_task:
+            python_file: data/scripts/register_gold_tables.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --catalog
+              - workspace
+              - --schema
+              - default
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pandas
+              - pyyaml
+
+    clinical_360_incremental_batch:
+      name: clinical-360-incremental-batch
+
+      schedule:
+        quartz_cron_expression: "0 0 9 * * ?"
+        timezone_id: "Asia/Kolkata"
+        pause_status: "PAUSED"
+
+      max_concurrent_runs: 1
+
+      tasks:
+        - task_key: land_encounter_chunk
+          spark_python_task:
+            python_file: data/simulator.py
+            parameters:
+              - --source
+              - /Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv
+              - --target
+              - /Volumes/workspace/default/healthcare_lakehouse/raw_ingestion
+              - --max-chunks
+              - "1"
+              - --chunk-size
+              - "5000"
+              - --interval-seconds
+              - "0"
+              - --source-name
+              - encounters
+              - --offset-table
+              - workspace.default.ingestion_offsets
+          environment_key: default
+
+        - task_key: run_file_pipeline
+          depends_on:
+            - task_key: land_encounter_chunk
+          spark_python_task:
+            python_file: data/pipeline.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+          environment_key: default
+
+        - task_key: register_operational_tables
+          depends_on:
+            - task_key: run_file_pipeline
+          spark_python_task:
+            python_file: data/scripts/register_gold_tables.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --catalog
+              - workspace
+              - --schema
+              - default
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pandas
+              - pyyaml
+
+    clinical_360_quality_demo:
+      name: clinical-360-quality-demo
+
+      tasks:
+        - task_key: create_quality_demo_batch
+          spark_python_task:
+            python_file: data/scripts/create_quality_demo_batch.py
+            parameters:
+              - --source
+              - /Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv
+              - --target
+              - /Volumes/workspace/default/healthcare_lakehouse/raw_ingestion
+              - --rows
+              - "5000"
+          environment_key: default
+
+        - task_key: run_quality_demo_pipeline
+          depends_on:
+            - task_key: create_quality_demo_batch
+          spark_python_task:
+            python_file: data/pipeline.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --batch-type
+              - DQ_TEST
+          environment_key: default
+
+        - task_key: register_quality_demo_tables
+          depends_on:
+            - task_key: run_quality_demo_pipeline
+          spark_python_task:
+            python_file: data/scripts/register_gold_tables.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --catalog
+              - workspace
+              - --schema
+              - default
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pandas
+              - pyyaml
+
+    clinical_360_benchmark_500k:
+      name: clinical-360-benchmark-500k
+
+      tasks:
+        - task_key: land_benchmark_500k
+          spark_python_task:
+            python_file: data/simulator.py
+            parameters:
+              - --source
+              - /Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv
+              - --target
+              - /Volumes/workspace/default/healthcare_lakehouse/raw_ingestion
+              - --max-chunks
+              - "5"
+              - --chunk-size
+              - "100000"
+              - --interval-seconds
+              - "0"
+              - --source-name
+              - encounters_benchmark
+              - --offset-table
+              - workspace.default.ingestion_offsets
+          environment_key: default
+
+        - task_key: run_benchmark_500k_pipeline
+          depends_on:
+            - task_key: land_benchmark_500k
+          spark_python_task:
+            python_file: data/pipeline.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --batch-type
+              - BENCHMARK_500K
+          environment_key: default
+
+        - task_key: register_benchmark_500k_tables
+          depends_on:
+            - task_key: run_benchmark_500k_pipeline
+          spark_python_task:
+            python_file: data/scripts/register_gold_tables.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --catalog
+              - workspace
+              - --schema
+              - default
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pandas
+              - pyyaml
+
+    clinical_360_benchmark_1m:
+      name: clinical-360-benchmark-1m
+
+      tasks:
+        - task_key: land_benchmark_1m
+          spark_python_task:
+            python_file: data/simulator.py
+            parameters:
+              - --source
+              - /Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv
+              - --target
+              - /Volumes/workspace/default/healthcare_lakehouse/raw_ingestion
+              - --max-chunks
+              - "10"
+              - --chunk-size
+              - "100000"
+              - --interval-seconds
+              - "0"
+              - --source-name
+              - encounters_benchmark
+              - --offset-table
+              - workspace.default.ingestion_offsets
+          environment_key: default
+
+        - task_key: run_benchmark_1m_pipeline
+          depends_on:
+            - task_key: land_benchmark_1m
+          spark_python_task:
+            python_file: data/pipeline.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --batch-type
+              - BENCHMARK_1M
+          environment_key: default
+
+        - task_key: register_benchmark_1m_tables
+          depends_on:
+            - task_key: run_benchmark_1m_pipeline
+          spark_python_task:
+            python_file: data/scripts/register_gold_tables.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/data/config.databricks.yaml
+              - --catalog
+              - workspace
+              - --schema
+              - default
+          environment_key: default
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - pandas
+              - pyyaml
+
+    clinical_360_kafka_ingestion:
+      name: clinical-360-kafka-ingestion
+
+      tasks:
+        - task_key: ingest_kafka_vitals
+          spark_python_task:
+            python_file: src/streaming/kafka_vitals_bronze.py
+          environment_key: kafka
+
+        - task_key: transform_kafka_vitals_silver
+          depends_on:
+            - task_key: ingest_kafka_vitals
+          spark_python_task:
+            python_file: src/streaming/kafka_vitals_silver.py
+          environment_key: kafka
+
+        - task_key: build_kafka_vitals_gold
+          depends_on:
+            - task_key: transform_kafka_vitals_silver
+          spark_python_task:
+            python_file: src/streaming/kafka_vitals_gold.py
+          environment_key: kafka
+
+        - task_key: check_kafka_vitals_quality
+          depends_on:
+            - task_key: build_kafka_vitals_gold
+          spark_python_task:
+            python_file: src/streaming/kafka_vitals_quality_check.py
+          environment_key: kafka
+
+      environments:
+        - environment_key: kafka
+          spec:
+            environment_version: "4"
+            dependencies:
+              - databricks-sdk
+
+    clinical_360_kafka_encounters:
+      name: clinical-360-kafka-encounters
+
+      tasks:
+        - task_key: publish_s3_encounters_to_kafka
+          spark_python_task:
+            python_file: src/streaming/publish_s3_encounters_to_kafka.py
+            parameters:
+              - --source
+              - /Volumes/workspace/default/clinical_s3_landing/encounters/encounters_combined.csv
+              - --max-rows
+              - "5000"
+              - --source-name
+              - s3_encounters
+              - --offset-table
+              - workspace.default.kafka_publish_offsets
+              - --topic
+              - clinical-encounters
+              - --dlq-topic
+              - clinical-dlq
+          environment_key: kafka
+
+        - task_key: ingest_kafka_encounters_bronze
+          depends_on:
+            - task_key: publish_s3_encounters_to_kafka
+          spark_python_task:
+            python_file: src/streaming/kafka_encounters_bronze.py
+          environment_key: kafka
+
+        - task_key: transform_kafka_encounters_silver
+          depends_on:
+            - task_key: ingest_kafka_encounters_bronze
+          spark_python_task:
+            python_file: src/streaming/kafka_encounters_silver.py
+          environment_key: kafka
+
+        - task_key: build_kafka_encounters_gold
+          depends_on:
+            - task_key: transform_kafka_encounters_silver
+          spark_python_task:
+            python_file: src/streaming/kafka_encounters_gold.py
+          environment_key: kafka
+
+      environments:
+        - environment_key: kafka
+          spec:
+            environment_version: "4"
+            dependencies:
+              - databricks-sdk
+              - confluent-kafka
+              - pandas
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+    workspace:
+      host: https://dbc-ee13d750-18f4.cloud.databricks.com
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
