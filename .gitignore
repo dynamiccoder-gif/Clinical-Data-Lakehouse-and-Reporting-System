@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+secrets/
+
+# Docs you do not want in Git
+README.md
+DEPLOYMENT.md
+DATABRICKS_DEPLOYMENT.md
+docs/
+development-log.txt
+
+# Large data and generated lakehouse output
+data/raw_ingestion/
+data/source_dump/
+data/databricks_sample/
+data/lakehouse/
+reports/
+*.csv
+*.parquet
+*.delta
+
+# Runtime/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+data/airflow/runtime/
+data/airflow/runtime_broken_*/
+
+# Local/tool state
+.databricks/
+*.log
+*.pid
+*.backup
+databricks.yml.backup
+.DS_Store
