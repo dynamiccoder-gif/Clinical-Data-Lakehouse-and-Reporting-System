@@ -11,6 +11,8 @@ DEPLOYMENT.md
 DATABRICKS_DEPLOYMENT.md
 docs/
 development-log.txt
+create-commits.sh
+gitpush.py
 
 # Large data and generated lakehouse output
 data/raw_ingestion/
