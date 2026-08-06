@@ -64,6 +64,20 @@ def kafka_producer():
     )
 
 
+def delivery_tracker():
+    status = {"delivered": 0, "failed": 0, "errors": []}
+
+    def on_delivery(error, message):
+        if error is not None:
+            status["failed"] += 1
+            if len(status["errors"]) < 5:
+                status["errors"].append(str(error))
+            return
+        status["delivered"] += 1
+
+    return status, on_delivery
+
+
 def ensure_offset_table(spark, table_name):
     spark.sql(
         f"""
@@ -175,9 +189,9 @@ def publish(source, max_rows, source_name, offset_table, topic, dlq_topic):
     spark = SparkSession.builder.getOrCreate()
     start_row = read_offset(spark, offset_table, source_name)
     producer = kafka_producer()
+    delivery_status, on_delivery = delivery_tracker()
     producer_run_id = datetime.now(timezone.utc).strftime("s3-kafka-%Y%m%d%H%M%S")
 
-    sent = 0
     rejected = 0
     scanned = 0
     next_row = start_row
@@ -215,6 +229,7 @@ def publish(source, max_rows, source_name, offset_table, topic, dlq_topic):
                 topic=dlq_topic,
                 key=event["patient_id"] or str(source_row),
                 value=json.dumps(dlq_event),
+                on_delivery=on_delivery,
             )
             rejected += 1
             continue
@@ -222,16 +237,34 @@ def publish(source, max_rows, source_name, offset_table, topic, dlq_topic):
             topic=topic,
             key=event["patient_id"],
             value=json.dumps(event),
+            on_delivery=on_delivery,
         )
-        sent += 1
         producer.poll(0)
 
     producer.flush()
+    delivered = delivery_status["delivered"]
+    failed = delivery_status["failed"]
+    expected_deliveries = scanned
+
+    if failed:
+        sample_errors = "; ".join(delivery_status["errors"])
+        raise RuntimeError(
+            f"Kafka publish failed for {failed} records. "
+            f"Delivered={delivered}, expected={expected_deliveries}. "
+            f"Sample errors: {sample_errors}"
+        )
+
+    if delivered != expected_deliveries:
+        raise RuntimeError(
+            f"Kafka delivery mismatch. delivered={delivered}, "
+            f"expected={expected_deliveries}, scanned={scanned}, dlq={rejected}"
+        )
+
     write_offset(spark, offset_table, source_name, next_row)
     print(
         f"[S3->KAFKA] source={source_name} topic={topic} "
         f"start_row={start_row:,} next_row={next_row:,} "
-        f"scanned={scanned:,} sent={sent:,} dlq={rejected:,} "
+        f"scanned={scanned:,} delivered={delivered:,} dlq={rejected:,} "
         f"producer_run_id={producer_run_id}"
     )
 
