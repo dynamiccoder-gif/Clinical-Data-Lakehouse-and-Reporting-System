@@ -120,7 +120,7 @@ query = (
     .option(
         "checkpointLocation",
         "/Volumes/workspace/default/"
-        "healthcare_lakehouse/checkpoints/kafka/encounters",
+        "healthcare_lakehouse/checkpoints/kafka/encounters_v2",
     )
     .trigger(availableNow=True)
     .toTable("workspace.default.bronze_kafka_encounters")
