@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
@@ -120,32 +122,35 @@ pass_rate = round((silver_count / source_count) * 100, 2) if source_count else 0
 existing_batch = spark.table(AUDIT_TABLE).agg(F.max("batch_id").alias("batch_id")).collect()
 next_batch_id = int(existing_batch[0]["batch_id"] or 0) + 1
 
+audit_payload = [
+    {
+        "batch_id": next_batch_id,
+        "execution_timestamp": datetime.now(timezone.utc),
+        "pass_rate_pct": float(pass_rate),
+        "pipeline_name": "Kafka-Encounter-Stream",
+        "quarantine_records_written": int(quarantine_count),
+        "silver_records_written": int(silver_count),
+        "source_records_read": int(source_count),
+        "status": "SUCCESS" if quarantine_count == 0 else "ANOMALIES_ISOLATED",
+        "duplicate_records_skipped": 0,
+        "duration_seconds": 0.0,
+        "input_file_count": 0,
+        "reconciliation_status": "PASS",
+        "records_inserted": int(silver_count),
+        "records_updated": 0,
+        "throughput_rows_per_second": 0.0,
+        "batch_type": "KAFKA_ENCOUNTERS",
+        "hard_failure_records": int(quarantine_count),
+        "validation_pass_rate_pct": float(pass_rate),
+        "warning_rate_pct": 0.0,
+        "warning_records": 0,
+    }
+]
+
 audit_df = spark.createDataFrame(
-    [
-        {
-            "batch_id": next_batch_id,
-            "execution_timestamp": None,
-            "pass_rate_pct": float(pass_rate),
-            "pipeline_name": "Kafka-Encounter-Stream",
-            "quarantine_records_written": int(quarantine_count),
-            "silver_records_written": int(silver_count),
-            "source_records_read": int(source_count),
-            "status": "SUCCESS" if quarantine_count == 0 else "ANOMALIES_ISOLATED",
-            "duplicate_records_skipped": 0,
-            "duration_seconds": 0.0,
-            "input_file_count": 0,
-            "reconciliation_status": "PASS",
-            "records_inserted": int(silver_count),
-            "records_updated": 0,
-            "throughput_rows_per_second": 0.0,
-            "batch_type": "KAFKA_ENCOUNTERS",
-            "hard_failure_records": int(quarantine_count),
-            "validation_pass_rate_pct": float(pass_rate),
-            "warning_rate_pct": 0.0,
-            "warning_records": 0,
-        }
-    ]
-).withColumn("execution_timestamp", F.current_timestamp())
+    audit_payload,
+    schema=spark.table(AUDIT_TABLE).schema,
+)
 
 (
     audit_df.write
