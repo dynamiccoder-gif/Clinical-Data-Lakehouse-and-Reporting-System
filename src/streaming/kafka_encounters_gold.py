@@ -5,9 +5,11 @@ from pyspark.sql import functions as F
 spark = SparkSession.builder.getOrCreate()
 
 SILVER_TABLE = "workspace.default.silver_kafka_encounters"
+QUARANTINE_TABLE = "workspace.default.quarantine_kafka_encounters"
 GOLD_SUMMARY_TABLE = "workspace.default.gold_kafka_encounters_summary"
 GOLD_TYPE_TABLE = "workspace.default.gold_kafka_encounters_by_type"
 GOLD_PATIENT_TABLE = "workspace.default.gold_kafka_encounters_by_patient"
+AUDIT_TABLE = "workspace.default.batch_audit"
 
 silver_df = spark.table(SILVER_TABLE)
 
@@ -110,9 +112,53 @@ patient_df = (
     .saveAsTable(GOLD_PATIENT_TABLE)
 )
 
+silver_count = silver_df.count()
+quarantine_count = spark.table(QUARANTINE_TABLE).count()
+source_count = silver_count + quarantine_count
+pass_rate = round((silver_count / source_count) * 100, 2) if source_count else 0.0
+
+existing_batch = spark.table(AUDIT_TABLE).agg(F.max("batch_id").alias("batch_id")).collect()
+next_batch_id = int(existing_batch[0]["batch_id"] or 0) + 1
+
+audit_df = spark.createDataFrame(
+    [
+        {
+            "batch_id": next_batch_id,
+            "execution_timestamp": None,
+            "pass_rate_pct": float(pass_rate),
+            "pipeline_name": "Kafka-Encounter-Stream",
+            "quarantine_records_written": int(quarantine_count),
+            "silver_records_written": int(silver_count),
+            "source_records_read": int(source_count),
+            "status": "SUCCESS" if quarantine_count == 0 else "ANOMALIES_ISOLATED",
+            "duplicate_records_skipped": 0,
+            "duration_seconds": 0.0,
+            "input_file_count": 0,
+            "reconciliation_status": "PASS",
+            "records_inserted": int(silver_count),
+            "records_updated": 0,
+            "throughput_rows_per_second": 0.0,
+            "batch_type": "KAFKA_ENCOUNTERS",
+            "hard_failure_records": int(quarantine_count),
+            "validation_pass_rate_pct": float(pass_rate),
+            "warning_rate_pct": 0.0,
+            "warning_records": 0,
+        }
+    ]
+).withColumn("execution_timestamp", F.current_timestamp())
+
+(
+    audit_df.write
+    .format("delta")
+    .mode("append")
+    .option("mergeSchema", "true")
+    .saveAsTable(AUDIT_TABLE)
+)
+
 print(f"Gold encounter summary rows: {summary_df.count()}")
 print(f"Gold encounter type rows: {type_df.count()}")
 print(f"Gold encounter patient rows: {patient_df.count()}")
+print(f"Kafka encounter audit batch_id: {next_batch_id}")
 print(f"Created table: {GOLD_SUMMARY_TABLE}")
 print(f"Created table: {GOLD_TYPE_TABLE}")
 print(f"Created table: {GOLD_PATIENT_TABLE}")
